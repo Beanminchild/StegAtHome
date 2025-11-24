@@ -1,2 +1,2 @@
 # Steg-Home
-Simple Stegaphnography Web App that lets you hide messages in pictures using XOR. 
+Simple steganography web app that lets you hide messages in pictures using XOR. 
