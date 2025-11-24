@@ -237,7 +237,7 @@
             document.getElementById('hideBtn').disabled = !(imgDataUrl && txtContent && key);
         }
 
-           // --- XOR Encryption ---
+    // --- XOR Encryption ---
     function encryptText(text, keyStr) {
         const enc = new TextEncoder();
         const textBytes = enc.encode(text);
@@ -248,9 +248,44 @@
         }
         return out;
     }
+
+    // --- XOR Decryption (repeating-key XOR, UTF-8) ---
+    function decryptText(cipherBytes, keyStr) {
+        const keyBytes = new TextEncoder().encode(keyStr);
+        const out = new Uint8Array(cipherBytes.length);
+        for (let i = 0; i < cipherBytes.length; i++) {
+            out[i] = cipherBytes[i] ^ keyBytes[i % keyBytes.length];
+        }
+        return new TextDecoder().decode(out);
+    }
+
         // --- LSB Steganography ---
         
-function hideDataInImage(imgDataUrl, dataBytes, callback) {
+function bytesConcat(...arrs) {
+    const total = arrs.reduce((s, a) => s + a.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const a of arrs) {
+        out.set(a, off);
+        off += a.length;
+    }
+    return out;
+}
+
+async function computeHMAC(keyStr, dataBytes) {
+    const keyBytes = new TextEncoder().encode(keyStr);
+    const cryptoKey = await crypto.subtle.importKey(
+        "raw",
+        keyBytes,
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign", "verify"]
+    );
+    const sig = await crypto.subtle.sign("HMAC", cryptoKey, dataBytes);
+    return new Uint8Array(sig);
+}
+
+function hideDataInImage(payloadBytes, callback) {
     const img = new Image();
     img.onload = function() {
         const canvas = document.createElement('canvas');
@@ -261,74 +296,84 @@ function hideDataInImage(imgDataUrl, dataBytes, callback) {
         const imgData = ctx.getImageData(0, 0, img.width, img.height);
         const pixels = imgData.data;
 
-        // Calculate max bytes we can hide (1 bit per channel, 3 channels per pixel)
-        const maxBytes = Math.floor((pixels.length / 4) * 3 / 8);
-        if (dataBytes.length > maxBytes) {
-            callback({error: `Text too large! Max bytes: ${maxBytes}, need: ${dataBytes.length}`});
+        // Count usable channels (skip alpha every 4th channel)
+        const usableChannels = pixels.length - Math.floor(pixels.length / 4);
+
+        // Max bytes we can store = usableChannels / 8
+        const maxBytes = Math.floor(usableChannels / 8);
+        if (payloadBytes.length > maxBytes) {
+            callback({ error: `Payload too large! Capacity: ${maxBytes} bytes, need: ${payloadBytes.length}` });
             return;
         }
 
-        // Store data length in first 32 bits using only RGB channels
-        let headerBitIdx = 0;
-        for (let i = 0; i < 11 && headerBitIdx < 32; i++) { // 11 pixels * 3 = 33 bits
-            for (let c = 0; c < 3 && headerBitIdx < 32; c++) { // R,G,B only
-                const idx = i * 4 + c;
-                const bit = (dataBytes.length >> (31 - headerBitIdx)) & 1;
-                pixels[idx] = (pixels[idx] & 0xFE) | bit;
-                headerBitIdx++;
-            }
+        // Write payload MSB-first into successive RGB LSBs (skip alpha channels)
+        let byteIdx = 0, bitIdx = 0;
+        let channelIdx = 0;
+        function nextChannelIndex() {
+            while (channelIdx < pixels.length && (channelIdx % 4) === 3) channelIdx++; // skip alpha
+            return channelIdx++;
         }
 
-        // Hide data in LSBs of RGB channels (skip alpha)
-        let dataIdx = 0, bitIdx = 0, pixelIdx = 32; // start after header
-        while (dataIdx < dataBytes.length) {
-            // For each pixel, hide 3 bits (R,G,B)
-            for (let c = 0; c < 3; c++) {
-                if (pixelIdx + c >= pixels.length) break;
-                const bit = (dataBytes[dataIdx] >> (7 - bitIdx)) & 1;
-                pixels[pixelIdx + c] = (pixels[pixelIdx + c] & 0xFE) | bit;
-                bitIdx++;
-                if (bitIdx === 8) {
-                    bitIdx = 0;
-                    dataIdx++;
-                }
-                if (dataIdx >= dataBytes.length) break;
+        while (byteIdx < payloadBytes.length) {
+            const b = payloadBytes[byteIdx];
+            for (let bit = 7; bit >= 0; bit--) {
+                const ch = nextChannelIndex();
+                const bitVal = (b >> bit) & 1;
+                pixels[ch] = (pixels[ch] & 0xFE) | bitVal;
             }
-            pixelIdx += 4; // next pixel
+            byteIdx++;
         }
 
         ctx.putImageData(imgData, 0, 0);
         canvas.toBlob(blob => {
-            callback({blob});
+            callback({ blob });
         }, "image/png", 0.92);
     };
-    img.onerror = () => callback({error: "Failed to load image"});
+    img.onerror = () => callback({ error: "Failed to load image" });
     img.src = imgDataUrl;
 }
 
-         document.getElementById('hideBtn').addEventListener('click', function() {
-            this.disabled = true;
-            document.getElementById('result').textContent = "Processing...";
-            try {
-                const key = document.getElementById('keyInput').value;
-                const encrypted = encryptText(txtContent, key);
-                hideDataInImage(imgDataUrl, encrypted, result => {
-                    if (result.error) {
-                        document.getElementById('result').textContent = result.error;
-                        this.disabled = false;
-                        return;
-                    }
-                    const url = URL.createObjectURL(result.blob);
-                    document.getElementById('result').innerHTML =
-                        `Success! <a href="${url}" download="stego.png" style="color:#ffd54f;">Download Stego PNG</a> (do not use 'Save image as', always use this link)`;
-                    this.disabled = false;
-                });
-            } catch (e) {
-                document.getElementById('result').textContent = "Error: " + e;
-                this.disabled = false;
-            }
-        });
+// Replace hide button handler: assemble header+ciphertext+HMAC and then hide
+document.getElementById('hideBtn').addEventListener('click', async function() {
+    const btn = this;
+    btn.disabled = true;
+    const resultDiv = document.getElementById('result');
+    resultDiv.textContent = "Processing...";
+    try {
+        const key = document.getElementById('keyInput').value;
+        const ciphertext = encryptText(txtContent, key); // Uint8Array
 
+        // Build header: magic (4 bytes) + length (4 bytes big-endian)
+        const magic = new TextEncoder().encode('STEG');
+        const lenBytes = new Uint8Array(4);
+        const dataLen = ciphertext.length;
+        lenBytes[0] = (dataLen >>> 24) & 0xFF;
+        lenBytes[1] = (dataLen >>> 16) & 0xFF;
+        lenBytes[2] = (dataLen >>> 8) & 0xFF;
+        lenBytes[3] = (dataLen) & 0xFF;
+
+        // Compute HMAC over (magic || length || ciphertext)
+        const toMac = bytesConcat(magic, lenBytes, ciphertext);
+        const hmac = await computeHMAC(key, toMac); // Uint8Array (SHA-256 -> 32 bytes)
+
+        const payload = bytesConcat(magic, lenBytes, ciphertext, hmac);
+
+        hideDataInImage(payload, result => {
+            if (result.error) {
+                resultDiv.textContent = result.error;
+                btn.disabled = false;
+                return;
+            }
+            const url = URL.createObjectURL(result.blob);
+            resultDiv.innerHTML =
+                `Success! <a href="${url}" download="stego.png" style="color:#ffd54f;">Download Stego PNG</a> (do not use 'Save image as', always use this link)`;
+            btn.disabled = false;
+        });
+    } catch (e) {
+        resultDiv.textContent = "Error: " + e;
+        btn.disabled = false;
+    }
+});
 
 
         // --- Decrypt UI Drag & Drop ---
@@ -395,100 +440,149 @@ function extractDataFromImage(imgDataUrl, callback) {
         const imgData = ctx.getImageData(0, 0, img.width, img.height);
         const pixels = imgData.data;
 
-        // Read data length from first 32 bits using only RGB channels
-        let dataLen = 0, headerBitIdx = 0;
-        for (let i = 0; i < 11 && headerBitIdx < 32; i++) { // 11 pixels * 3 = 33 bits
-            for (let c = 0; c < 3 && headerBitIdx < 32; c++) { // R,G,B only
-                const idx = i * 4 + c;
-                dataLen = (dataLen << 1) | (pixels[idx] & 1);
-                headerBitIdx++;
-            }
+        // Helper to iterate over non-alpha channels
+        let channelIdx = 0;
+        function nextChannelIndex() {
+            while (channelIdx < pixels.length && (channelIdx % 4) === 3) channelIdx++; // skip alpha
+            return channelIdx++;
         }
 
-        // Validate dataLen
-        const maxPossible = Math.floor((pixels.length / 4) * 3 / 8);
-        if (!Number.isFinite(dataLen) || dataLen <= 0 || dataLen > maxPossible) {
+        // First read header (8 bytes = 64 bits)
+        const headerBytes = new Uint8Array(8);
+        for (let i = 0; i < 8; i++) {
+            let val = 0;
+            for (let b = 0; b < 8; b++) {
+                const ch = nextChannelIndex();
+                const bit = pixels[ch] & 1;
+                val = (val << 1) | bit;
+            }
+            headerBytes[i] = val;
+        }
+
+        const magic = new TextDecoder().decode(headerBytes.slice(0,4));
+        if (magic !== 'STEG') {
+            callback(null, `❌ Missing magic header (found "${magic}"). This image may not contain STEG data.`);
+            return;
+        }
+        const dataLen =
+            (headerBytes[4] << 24) |
+            (headerBytes[5] << 16) |
+            (headerBytes[6] << 8) |
+            (headerBytes[7]);
+
+        // Validate sizes
+        const usableChannels = pixels.length - Math.floor(pixels.length / 4);
+        const maxPayloadBytes = Math.floor(usableChannels / 8);
+        // payload = header(8) + dataLen + hmac(32)
+        const expectedPayloadBytes = 8 + dataLen + 32;
+        if (dataLen <= 0 || expectedPayloadBytes > maxPayloadBytes) {
             callback(null, `❌ Invalid or corrupted data length (${dataLen}). This image may not contain hidden data.`);
             return;
         }
 
-        // Extract data from LSBs of RGB channels
-        const dataBytes = new Uint8Array(dataLen);
-        let dataIdx = 0, bitIdx = 0, pixelIdx = 32;
-        while (dataIdx < dataLen) {
-            // For each pixel, extract 3 bits (R,G,B)
-            for (let c = 0; c < 3; c++) {
-                if (pixelIdx + c >= pixels.length) break;
-                const bit = pixels[pixelIdx + c] & 1;
-                dataBytes[dataIdx] = (dataBytes[dataIdx] << 1) | bit;
-                bitIdx++;
-                if (bitIdx === 8) {
-                    bitIdx = 0;
-                    dataIdx++;
-                }
-                if (dataIdx >= dataLen) break;
+        // Now read remainder of payload (dataLen + 32 HMAC)
+        const remainderLen = dataLen + 32;
+        const remainder = new Uint8Array(remainderLen);
+        for (let i = 0; i < remainderLen; i++) {
+            let val = 0;
+            for (let b = 0; b < 8; b++) {
+                const ch = nextChannelIndex();
+                const bit = pixels[ch] & 1;
+                val = (val << 1) | bit;
             }
-            pixelIdx += 4;
+            remainder[i] = val;
         }
-    // Debug: Show header and first bytes
-    console.log('Extracted dataLen:', dataLen);
-    console.log('First 32 bytes:', Array.from(dataBytes.slice(0, 32)));
-    callback(dataBytes, null);
+
+        // Construct full payload: header + remainder
+        const fullPayload = bytesConcat(headerBytes, remainder);
+        callback(fullPayload, null);
     };
     img.onerror = () => callback(null, "❌ Failed to load image.");
     img.src = imgDataUrl;
 }
 
-// --- XOR Decryption ---
-function decryptText(dataBytes, keyStr) {
-    if (!dataBytes || dataBytes.length === 0) throw "No data found";
-    const enc = new TextEncoder();
-    const keyBytes = enc.encode(keyStr);
-    const out = new Uint8Array(dataBytes.length);
-    for (let i = 0; i < dataBytes.length; i++) {
-        out[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
-    }
-    return new TextDecoder().decode(out);
-}
+// --- XOR Decryption remains the same (uses repeating-key XOR) ---
 
 // --- Decrypt Button Handler ---
- document.getElementById('decryptBtn').addEventListener('click', function() {
-    this.disabled = true;
+document.getElementById('decryptBtn').addEventListener('click', function() {
+    const btn = this;
+    btn.disabled = true;
     const resultDiv = document.getElementById('decResult');
     resultDiv.textContent = "Processing...";
     try {
-        extractDataFromImage(decImgDataUrl, function(dataBytes, errorMsg) {
+        extractDataFromImage(decImgDataUrl, async function(fullPayload, errorMsg) {
             if (errorMsg) {
                 resultDiv.textContent = errorMsg;
-                this.disabled = false;
+                btn.disabled = false;
                 return;
             }
-            if (!dataBytes || dataBytes.length === 0) {
-                resultDiv.textContent = `❌ Extracted data is too short (${dataBytes ? dataBytes.length : 0} bytes). This image may not contain hidden data.`;
-                if (dataBytes) {
-                    resultDiv.textContent += '\nFirst bytes: ' + Array.from(dataBytes.slice(0, 32)).join(', ');
-                }
-                this.disabled = false;
+            if (!fullPayload || fullPayload.length < 8 + 32) {
+                resultDiv.textContent = `❌ Extracted payload too short (${fullPayload ? fullPayload.length : 0} bytes).`;
+                btn.disabled = false;
                 return;
             }
+
             try {
-                const key = document.getElementById('decKeyInput').value;
-                let text;
-                try {
-                    text = decryptText(dataBytes, key);
-                } catch (decryptionError) {
-                    resultDiv.textContent = "❌ Decryption error: " + decryptionError;
-                    this.disabled = false;
+                // Parse header
+                const magic = new TextDecoder().decode(fullPayload.slice(0,4));
+                if (magic !== 'STEG') {
+                    resultDiv.textContent = `❌ Invalid magic header: ${magic}`;
+                    btn.disabled = false;
                     return;
                 }
+                const dataLen =
+                    (fullPayload[4] << 24) |
+                    (fullPayload[5] << 16) |
+                    (fullPayload[6] << 8) |
+                    (fullPayload[7]);
+
+                const ciphertext = fullPayload.slice(8, 8 + dataLen);
+                const hmacExtracted = fullPayload.slice(8 + dataLen);
+
+                const key = document.getElementById('decKeyInput').value;
+                // compute expected HMAC
+                const toMac = bytesConcat(fullPayload.slice(0, 8 + dataLen)); // magic||len||ciphertext
+                let hmacExpected;
+                try {
+                    hmacExpected = await computeHMAC(key, toMac);
+                } catch (e) {
+                    resultDiv.textContent = "❌ HMAC computation failed: " + e;
+                    btn.disabled = false;
+                    return;
+                }
+
+                // constant-time compare
+                if (hmacExtracted.length !== hmacExpected.length) {
+                    resultDiv.textContent = `❌ HMAC length mismatch.`;
+                    btn.disabled = false;
+                    return;
+                }
+                let diff = 0;
+                for (let i = 0; i < hmacExpected.length; i++) diff |= hmacExpected[i] ^ hmacExtracted[i];
+                if (diff !== 0) {
+                    resultDiv.textContent = "❌ Authentication failed — wrong key or corrupted data.";
+                    btn.disabled = false;
+                    return;
+                }
+
+                // Decrypt ciphertext using repeating-key XOR
+                let text;
+                try {
+                    text = decryptText(ciphertext, key);
+                } catch (decryptionError) {
+                    resultDiv.textContent = "❌ Decryption error: " + decryptionError;
+                    btn.disabled = false;
+                    return;
+                }
+
                 const blob = new Blob([text], {type: "text/plain"});
                 const url = URL.createObjectURL(blob);
                 resultDiv.innerHTML =
                     `✅ Success! <a href="${url}" download="extracted.txt" style="color:#ffd54f;">Download Extracted Text</a><br><pre style="margin-top:1em;background:#181c20;padding:1em;border-radius:6px;max-height:300px;overflow:auto;">${text.replace(/</g,"&lt;")}</pre>`;
-                this.disabled = false;
+                btn.disabled = false;
             } catch (e) {
                 resultDiv.textContent = "❌ Unexpected error: " + e;
-                this.disabled = false;
+                btn.disabled = false;
             }
         });
     } catch (e) {
@@ -496,7 +590,6 @@ function decryptText(dataBytes, keyStr) {
         this.disabled = false;
     }
 });
-// ...existing code...
     </script>
 </body>
 </html>
