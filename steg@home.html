@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Steganography: Hide Text in PNG</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #333;
+            color: #e0e0e0;
+        }
+        header {
+            background: #23272b;
+            padding: 1rem 2rem;
+            text-align: center;
+            font-size: 2rem;
+            letter-spacing: 2px;
+            border-bottom: 2px solid #333;
+        }
+        main {
+            max-width: 700px;
+            margin: 2rem auto;
+            background: #23272b;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px #0008;
+            padding: 2rem;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 1.3rem;
+            color: #98FB98;
+        }
+        .drop-area {
+            border: 2px dashed #98FB98;
+            border-radius: 8px;
+            padding: 1.5em;
+            text-align: center;
+            margin-bottom: 1.2em;
+            background: #181c20;
+            transition: border-color 0.2s;
+        }
+        .drop-area.dragover {
+            border-color: #ffd54f;
+            background: #23272b;
+        }
+        .file-info {
+            margin: 0.5em 0;
+            color: #90caf9;
+            font-size: 1em;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        label.file-label {
+            display: inline-block;
+            background: #98FB98;
+            color: #222;
+            padding: 0.6em 1.2em;
+            border-radius: 6px;
+            cursor: pointer;
+            margin: 0.5em 0;
+            font-weight: bold;
+        }
+        .form-group {
+            margin-bottom: 1.2em;
+        }
+        input[type="password"], input[type="text"] {
+            width: 100%;
+            padding: 0.6em;
+            border-radius: 5px;
+            border: 1px solid #333;
+            background: #181c20;
+            color: #e0e0e0;
+            font-size: 1em;
+        }
+        button {
+            background: #ffd54f;
+            color: #222;
+            padding: 0.7em 2em;
+            border-radius: 7px;
+            border: none;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: bold;
+            transition: background 0.2s;
+            margin-top: 1em;
+        }
+        button:disabled {
+            background: #888;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 2em;
+            color: #98FB98;
+            font-size: 1.1em;
+        }
+        @media (max-width: 600px) {
+            main { padding: 1em; }
+            h2 { font-size: 1.1rem; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        Steganography: Hide Text in JPEG
+    </header>
+    <main>
+    <div style="display:flex; gap:1em; margin-bottom:2em;">
+        <button id="toggleModeBtn" style="padding:0.6em 1.5em; border-radius:6px; background:#90caf9; color:#222; border:none; cursor:pointer;">
+            Switch to Decrypt Mode
+        </button>
+    </div>
+    <div id="hideUI">
+        <h2>Step 1: Select or Drag & Drop a JPEG Image</h2>
+        <div id="imgDrop" class="drop-area">
+            <label class="file-label">
+                Choose JPEG
+                <input type="file" id="imgInput" accept="image/png">
+            </label>
+            <div id="imgInfo" class="file-info"></div>
+        </div>
+
+        <h2>Step 2: Select or Drag & Drop a Text File</h2>
+        <div id="txtDrop" class="drop-area">
+            <label class="file-label">
+                Choose Text File
+                <input type="file" id="txtInput" accept=".txt">
+            </label>
+            <div id="txtInfo" class="file-info"></div>
+        </div>
+
+        <div class="form-group">
+            <h2>Step 3: Enter Encryption Key</h2>
+            <input type="password" id="keyInput" placeholder="Encryption Key">
+        </div>
+
+        <button id="hideBtn" disabled>Hide Text in Image</button>
+
+        <div id="result" class="result"></div>
+    </div>
+    <div id="decryptUI" style="display:none;">
+        <h2>Step 1: Select or Drag & Drop a JPEG Image</h2>
+        <div id="decImgDrop" class="drop-area">
+            <label class="file-label">
+                Choose JPEG
+                <input type="file" id="decImgInput" accept="image/png">
+            </label>
+            <div id="decImgInfo" class="file-info"></div>
+        </div>
+        <div class="form-group">
+            <h2>Step 2: Enter Encryption Key</h2>
+            <input type="password" id="decKeyInput" placeholder="Encryption Key">
+        </div>
+        <button id="decryptBtn" disabled>Extract & Decrypt Text</button>
+        <div id="decResult" class="result"></div>
+    </div>
+</main>
+
+<script>
+
+        // --- Toggle UI ---
+        const toggleBtn = document.getElementById('toggleModeBtn');
+        const hideUI = document.getElementById('hideUI');
+        const decryptUI = document.getElementById('decryptUI');
+        let decryptMode = false;
+        toggleBtn.addEventListener('click', () => {
+        decryptMode = !decryptMode;
+            hideUI.style.display = decryptMode ? 'none' : '';
+            decryptUI.style.display = decryptMode ? '' : 'none';
+            toggleBtn.textContent = decryptMode ? 'Switch to Hide Mode' : 'Switch to Decrypt Mode';
+        });
+
+        // --- Drag & Drop Handlers ---
+        function setupDropArea(areaId, inputId, infoId, fileType, onFile) {
+            const area = document.getElementById(areaId);
+            const input = document.getElementById(inputId);
+            const info = document.getElementById(infoId);
+
+            area.addEventListener('dragover', e => {
+                e.preventDefault();
+                area.classList.add('dragover');
+            });
+            area.addEventListener('dragleave', e => {
+                area.classList.remove('dragover');
+            });
+            area.addEventListener('drop', e => {
+                e.preventDefault();
+                area.classList.remove('dragover');
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.match(fileType)) {
+                    info.textContent = file.name;
+                    onFile(file);
+                } else {
+                    info.textContent = 'Invalid file type!';
+                }
+            });
+            input.addEventListener('change', e => {
+                const file = e.target.files[0];
+                if (file && file.type.match(fileType)) {
+                    info.textContent = file.name;
+                    onFile(file);
+                } else {
+                    info.textContent = 'Invalid file type!';
+                }
+            });
+        }
+
+        let imgFile = null, txtFile = null, imgDataUrl = null, txtContent = null;
+
+        setupDropArea('imgDrop', 'imgInput', 'imgInfo', /^image\/png$/, file => {
+            imgFile = file;
+            const reader = new FileReader();
+            reader.onload = e => {
+                imgDataUrl = e.target.result;
+                checkReady();
+            };
+            reader.readAsDataURL(file);
+        });
+
+        setupDropArea('txtDrop', 'txtInput', 'txtInfo', /^text\/plain$/, file => {
+            txtFile = file;
+            const reader = new FileReader();
+            reader.onload = e => {
+                txtContent = e.target.result;
+                checkReady();
+            };
+            reader.readAsText(file);
+        });
+
+        document.getElementById('keyInput').addEventListener('input', checkReady);
+
+        function checkReady() {
+            const key = document.getElementById('keyInput').value;
+            document.getElementById('hideBtn').disabled = !(imgDataUrl && txtContent && key);
+        }
+
+           // --- XOR Encryption ---
+    function encryptText(text, keyStr) {
+        const enc = new TextEncoder();
+        const textBytes = enc.encode(text);
+        const keyBytes = enc.encode(keyStr);
+        const out = new Uint8Array(textBytes.length);
+        for (let i = 0; i < textBytes.length; i++) {
+            out[i] = textBytes[i] ^ keyBytes[i % keyBytes.length];
+        }
+        return out;
+    }
+        // --- LSB Steganography ---
+        
+function hideDataInImage(imgDataUrl, dataBytes, callback) {
+    const img = new Image();
+    img.onload = function() {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, img.width, img.height);
+        const pixels = imgData.data;
+
+        // Calculate max bytes we can hide (1 bit per channel, 3 channels per pixel)
+        const maxBytes = Math.floor((pixels.length / 4) * 3 / 8);
+        if (dataBytes.length > maxBytes) {
+            callback({error: `Text too large! Max bytes: ${maxBytes}, need: ${dataBytes.length}`});
+            return;
+        }
+
+        // Store data length in first 32 bits using only RGB channels
+        let headerBitIdx = 0;
+        for (let i = 0; i < 11 && headerBitIdx < 32; i++) { // 11 pixels * 3 = 33 bits
+            for (let c = 0; c < 3 && headerBitIdx < 32; c++) { // R,G,B only
+                const idx = i * 4 + c;
+                const bit = (dataBytes.length >> (31 - headerBitIdx)) & 1;
+                pixels[idx] = (pixels[idx] & 0xFE) | bit;
+                headerBitIdx++;
+            }
+        }
+
+        // Hide data in LSBs of RGB channels (skip alpha)
+        let dataIdx = 0, bitIdx = 0, pixelIdx = 32; // start after header
+        while (dataIdx < dataBytes.length) {
+            // For each pixel, hide 3 bits (R,G,B)
+            for (let c = 0; c < 3; c++) {
+                if (pixelIdx + c >= pixels.length) break;
+                const bit = (dataBytes[dataIdx] >> (7 - bitIdx)) & 1;
+                pixels[pixelIdx + c] = (pixels[pixelIdx + c] & 0xFE) | bit;
+                bitIdx++;
+                if (bitIdx === 8) {
+                    bitIdx = 0;
+                    dataIdx++;
+                }
+                if (dataIdx >= dataBytes.length) break;
+            }
+            pixelIdx += 4; // next pixel
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+        canvas.toBlob(blob => {
+            callback({blob});
+        }, "image/png", 0.92);
+    };
+    img.onerror = () => callback({error: "Failed to load image"});
+    img.src = imgDataUrl;
+}
+
+         document.getElementById('hideBtn').addEventListener('click', function() {
+            this.disabled = true;
+            document.getElementById('result').textContent = "Processing...";
+            try {
+                const key = document.getElementById('keyInput').value;
+                const encrypted = encryptText(txtContent, key);
+                hideDataInImage(imgDataUrl, encrypted, result => {
+                    if (result.error) {
+                        document.getElementById('result').textContent = result.error;
+                        this.disabled = false;
+                        return;
+                    }
+                    const url = URL.createObjectURL(result.blob);
+                    document.getElementById('result').innerHTML =
+                        `Success! <a href="${url}" download="stego.png" style="color:#ffd54f;">Download Stego PNG</a> (do not use 'Save image as', always use this link)`;
+                    this.disabled = false;
+                });
+            } catch (e) {
+                document.getElementById('result').textContent = "Error: " + e;
+                this.disabled = false;
+            }
+        });
+
+
+
+        // --- Decrypt UI Drag & Drop ---
+function setupDecDropArea(areaId, inputId, infoId, onFile) {
+    const area = document.getElementById(areaId);
+    const input = document.getElementById(inputId);
+    const info = document.getElementById(infoId);
+
+    area.addEventListener('dragover', e => {
+        e.preventDefault();
+        area.classList.add('dragover');
+    });
+    area.addEventListener('dragleave', e => {
+        area.classList.remove('dragover');
+    });
+    area.addEventListener('drop', e => {
+        e.preventDefault();
+        area.classList.remove('dragover');
+        const file = e.dataTransfer.files[0];
+        if (file && file.type.match(/^image\/png$/)) {
+            info.textContent = file.name;
+            onFile(file);
+        } else {
+            info.textContent = 'Invalid file type!';
+        }
+    });
+    input.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (file && file.type.match(/^image\/png$/)) {
+            info.textContent = file.name;
+            onFile(file);
+        } else {
+            info.textContent = 'Invalid file type!';
+        }
+    });
+}
+
+let decImgDataUrl = null;
+setupDecDropArea('decImgDrop', 'decImgInput', 'decImgInfo', file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+        decImgDataUrl = e.target.result;
+        checkDecReady();
+    };
+    reader.readAsDataURL(file);
+});
+document.getElementById('decKeyInput').addEventListener('input', checkDecReady);
+
+function checkDecReady() {
+    const key = document.getElementById('decKeyInput').value;
+    document.getElementById('decryptBtn').disabled = !(decImgDataUrl && key);
+}
+
+// --- Extract Data from Image ---
+
+function extractDataFromImage(imgDataUrl, callback) {
+    const img = new Image();
+    img.onload = function() {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, img.width, img.height);
+        const pixels = imgData.data;
+
+        // Read data length from first 32 bits using only RGB channels
+        let dataLen = 0, headerBitIdx = 0;
+        for (let i = 0; i < 11 && headerBitIdx < 32; i++) { // 11 pixels * 3 = 33 bits
+            for (let c = 0; c < 3 && headerBitIdx < 32; c++) { // R,G,B only
+                const idx = i * 4 + c;
+                dataLen = (dataLen << 1) | (pixels[idx] & 1);
+                headerBitIdx++;
+            }
+        }
+
+        // Validate dataLen
+        const maxPossible = Math.floor((pixels.length / 4) * 3 / 8);
+        if (!Number.isFinite(dataLen) || dataLen <= 0 || dataLen > maxPossible) {
+            callback(null, `❌ Invalid or corrupted data length (${dataLen}). This image may not contain hidden data.`);
+            return;
+        }
+
+        // Extract data from LSBs of RGB channels
+        const dataBytes = new Uint8Array(dataLen);
+        let dataIdx = 0, bitIdx = 0, pixelIdx = 32;
+        while (dataIdx < dataLen) {
+            // For each pixel, extract 3 bits (R,G,B)
+            for (let c = 0; c < 3; c++) {
+                if (pixelIdx + c >= pixels.length) break;
+                const bit = pixels[pixelIdx + c] & 1;
+                dataBytes[dataIdx] = (dataBytes[dataIdx] << 1) | bit;
+                bitIdx++;
+                if (bitIdx === 8) {
+                    bitIdx = 0;
+                    dataIdx++;
+                }
+                if (dataIdx >= dataLen) break;
+            }
+            pixelIdx += 4;
+        }
+    // Debug: Show header and first bytes
+    console.log('Extracted dataLen:', dataLen);
+    console.log('First 32 bytes:', Array.from(dataBytes.slice(0, 32)));
+    callback(dataBytes, null);
+    };
+    img.onerror = () => callback(null, "❌ Failed to load image.");
+    img.src = imgDataUrl;
+}
+
+// --- XOR Decryption ---
+function decryptText(dataBytes, keyStr) {
+    if (!dataBytes || dataBytes.length === 0) throw "No data found";
+    const enc = new TextEncoder();
+    const keyBytes = enc.encode(keyStr);
+    const out = new Uint8Array(dataBytes.length);
+    for (let i = 0; i < dataBytes.length; i++) {
+        out[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+    }
+    return new TextDecoder().decode(out);
+}
+
+// --- Decrypt Button Handler ---
+ document.getElementById('decryptBtn').addEventListener('click', function() {
+    this.disabled = true;
+    const resultDiv = document.getElementById('decResult');
+    resultDiv.textContent = "Processing...";
+    try {
+        extractDataFromImage(decImgDataUrl, function(dataBytes, errorMsg) {
+            if (errorMsg) {
+                resultDiv.textContent = errorMsg;
+                this.disabled = false;
+                return;
+            }
+            if (!dataBytes || dataBytes.length === 0) {
+                resultDiv.textContent = `❌ Extracted data is too short (${dataBytes ? dataBytes.length : 0} bytes). This image may not contain hidden data.`;
+                if (dataBytes) {
+                    resultDiv.textContent += '\nFirst bytes: ' + Array.from(dataBytes.slice(0, 32)).join(', ');
+                }
+                this.disabled = false;
+                return;
+            }
+            try {
+                const key = document.getElementById('decKeyInput').value;
+                let text;
+                try {
+                    text = decryptText(dataBytes, key);
+                } catch (decryptionError) {
+                    resultDiv.textContent = "❌ Decryption error: " + decryptionError;
+                    this.disabled = false;
+                    return;
+                }
+                const blob = new Blob([text], {type: "text/plain"});
+                const url = URL.createObjectURL(blob);
+                resultDiv.innerHTML =
+                    `✅ Success! <a href="${url}" download="extracted.txt" style="color:#ffd54f;">Download Extracted Text</a><br><pre style="margin-top:1em;background:#181c20;padding:1em;border-radius:6px;max-height:300px;overflow:auto;">${text.replace(/</g,"&lt;")}</pre>`;
+                this.disabled = false;
+            } catch (e) {
+                resultDiv.textContent = "❌ Unexpected error: " + e;
+                this.disabled = false;
+            }
+        });
+    } catch (e) {
+        document.getElementById('decResult').textContent = "❌ Error: " + e;
+        this.disabled = false;
+    }
+});
+// ...existing code...
+    </script>
+</body>
+</html>
